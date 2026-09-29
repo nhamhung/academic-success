@@ -1,0 +1,9 @@
+repository_owner: nhamhhung
+repository_name: academic-success
+default_branch: main
+pages_url: https://nhamhhung.github.io/academic-success/
+streamlit_url: https://academic-success.streamlit.app
+streamlit_entrypoint: app/streamlit_app.py
+streamlit_secrets:
+  - KAGGLE_API_TOKEN
+

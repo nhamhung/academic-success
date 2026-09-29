@@ -1,0 +1,453 @@
+---
+title: "Predicting Academic Success"
+subtitle: "Dropout, Enrollment, and Graduation — a worked case study on Kaggle's Playground Series S4E6"
+author: "Your Name"
+date: today
+format:
+  html:
+    theme:
+      light: flatly
+      dark: darkly
+    css: styles.css
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    code-copy: true
+    title-block-banner: true
+    fig-width: 7.5
+    fig-height: 4.5
+    embed-resources: true
+    smooth-scroll: true
+  pdf:
+    toc: true
+    number-sections: true
+execute:
+  echo: true
+  warning: false
+  message: false
+jupyter: academic-success
+---
+
+```{python}
+#| echo: false
+#| output: false
+import sys
+sys.path.insert(0, "../src")
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+
+PALETTE = ["#2c5cc5", "#5b8def", "#8fb4f2", "#e07a5f", "#81b29a"]
+sns.set_theme(style="whitegrid", font="sans-serif")
+plt.rcParams.update({
+    "figure.dpi": 130,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.titleweight": "600",
+    "axes.titlesize": 13,
+    "axes.labelsize": 11,
+})
+```
+
+## Introduction
+
+Higher-education institutions have a direct interest in identifying students
+at risk of dropping out early enough to intervene. This report works through
+a supervised multi-class classification approach to that problem, using
+Kaggle's [Playground Series S4E6](https://www.kaggle.com/competitions/playground-series-s4e6)
+dataset — a synthetic-augmented version of the UCI "Predict Students' Dropout
+and Academic Success" dataset.
+
+The task: given a student's demographics, socioeconomic background,
+admission record, and first/second-semester curricular performance, predict
+whether they will ultimately be classified as **Dropout**, **Enrolled**
+(still active, outcome pending), or **Graduate**.
+
+This writeup accompanies `notebooks/01_eda_and_modeling.ipynb`, which
+contains the full exploratory and modeling code. Here we focus on
+*why* each step was taken and what it reveals, rather than repeating every
+line of code.
+
+## Data
+
+The dataset has one row per student and roughly three groups of features:
+
+- **Demographics & background** — marital status, nationality, whether the
+  student is displaced from their region, has educational special needs,
+  is a debtor, etc.
+- **Admission record** — application mode/order, course, previous
+  qualification and its grade, admission grade.
+- **Curricular performance** — units credited/enrolled/evaluated/approved
+  and average grade, separately for the 1st and 2nd semester.
+- **Macroeconomic context** — unemployment rate, inflation rate, and GDP at
+  the time of enrollment.
+
+### What "1st sem" / "2nd sem" actually cover, and why that's enough
+
+Each semester field breaks down as follows:
+
+| Field | Meaning |
+|---|---|
+| `credited` | Units credited without an exam (transfer credit, exemptions, prior qualifications) |
+| `enrolled` | Units the student registered for that semester |
+| `evaluations` | Number of evaluation instances (exams/assessments) undergone |
+| `approved` | Units passed |
+| `grade` | Average grade across that semester's evaluated units |
+| `without evaluations` | Units enrolled in but never evaluated — disengagement, distinct from being evaluated *and* failing |
+
+"1st sem"/"2nd sem" here means the student's **first academic year** —
+Portuguese degree programs typically run 3+ years, and the target
+(Dropout/Enrolled/Graduate) is recorded at the end of the program's normal
+duration, years later. Predicting a multi-year outcome from only the first
+year's data is not a limitation of this dataset — it *is* the point.
+
+This reflects a real, well-studied use case: **early-warning dropout
+prediction**. An institution doesn't want to wait until year 3 to notice a
+student is at risk — by then it's often too late to intervene financially,
+academically, or administratively. The actionable question is: *using only
+what's known from admission plus the first year, can at-risk students be
+flagged early enough to actually help them?* That framing is also why this
+project's strongest engineered features — `approval_rate_1st_sem`/
+`approval_rate_2nd_sem` and `grade_trend` — matter so much: a student's
+*trajectory* within that first year (improving vs. declining, engaged vs.
+disengaging) is a meaningful early signal for what happens over the
+following years, even though the model never observes those later years
+directly. The SHAP results below confirm this empirically.
+
+Most "categorical" fields arrive as integer codes (see the UCI documentation
+for the legend) rather than as strings — a common data-cleaning trap, since
+a naive pipeline might treat them as ordinal numeric features instead of
+unordered categories. This project's preprocessing pipeline
+(`src/academic_success/features.py`) explicitly one-hot encodes them instead.
+
+```{python}
+#| label: fig-class-balance
+#| fig-cap: "Target class distribution across the 76,518-row training set."
+from academic_success import config, data
+
+train_df = data.load_train()
+counts = train_df[config.TARGET_COL].value_counts().reindex(config.TARGET_CLASSES)
+
+fig, ax = plt.subplots(figsize=(6.5, 3.8))
+bars = ax.bar(counts.index, counts.values, color=PALETTE[:3], width=0.6)
+for bar, value in zip(bars, counts.values):
+    ax.text(bar.get_x() + bar.get_width() / 2, value + 600, f"{value:,}\n({value / counts.sum():.0%})",
+            ha="center", va="bottom", fontsize=10)
+ax.set_ylabel("Students")
+ax.set_ylim(0, counts.max() * 1.22)
+ax.set_title("Target class balance")
+plt.tight_layout()
+plt.show()
+```
+
+::: {.callout-note}
+## Why this matters
+The classes are moderately imbalanced (~47% Graduate / 33% Dropout / 20%
+Enrolled). This is *why* every model comparison in this report uses
+macro-averaged F1 rather than raw accuracy — a model that leans on the
+majority "Graduate" class would otherwise look deceptively good.
+:::
+
+## Feature Engineering
+
+Beyond the raw columns, `src/academic_success/features.py` derives features
+that summarize a student's trajectory across the two semesters rather than
+treating each semester in isolation:
+
+- `approval_rate_1st_sem` / `approval_rate_2nd_sem` — the fraction of
+  enrolled units a student actually passed, per semester. Two students who
+  both "enroll in 6 units" look identical on the raw columns, but one who
+  passes all 6 and one who passes 1 are very different risk profiles — the
+  approval *rate* captures that, the raw counts alone don't.
+- `total_units_approved` / `total_units_enrolled` — cumulative load and
+  success across both semesters, a coarser but more stable signal than
+  either semester alone.
+- `grade_trend` — the change in average grade from the 1st to the 2nd
+  semester. A student improving over time is a different risk profile from
+  one declining, even at the same average grade.
+- `no_evaluation_ratio` — the fraction of a student's units that were never
+  evaluated at all (as opposed to evaluated and failed). This is a
+  disengagement signal distinct from academic failure.
+- `max_parental_qualification` — the higher of the mother's and father's
+  qualification codes. **Caveat, stated plainly rather than glossed over:**
+  these codes are categorical labels, not a ranked scale, so taking their
+  numeric max is a common but imperfect Kaggle proxy for "at least one
+  highly-coded parental qualification" — not a genuine ordinal measurement.
+
+All ratio features guard against division by zero explicitly (mapping `0/0`
+and `x/0` to `0` rather than `NaN`/`inf`) — a small but easy-to-miss data
+cleaning detail that would otherwise silently corrupt every downstream row
+for students with zero enrolled units in a semester.
+
+```{python}
+#| label: fig-approval-rate-by-outcome
+#| fig-cap: "1st-semester approval rate by eventual outcome — the gap between Dropout and Graduate is exactly the signal this engineered feature was designed to expose."
+from academic_success.features import FeatureEngineer
+
+X_preview = train_df[config.RAW_FEATURE_COLS]
+y_preview = train_df[config.TARGET_COL]
+engineered_preview = FeatureEngineer().fit_transform(X_preview)
+
+fig, ax = plt.subplots(figsize=(6.5, 3.8))
+sns.boxplot(
+    x=y_preview, y=engineered_preview["approval_rate_1st_sem"], hue=y_preview, legend=False,
+    order=config.TARGET_CLASSES, palette=PALETTE[:3], ax=ax, width=0.5,
+)
+ax.set_xlabel("")
+ax.set_ylabel("1st-sem approval rate")
+ax.set_title("Approval rate cleanly separates the three outcomes")
+plt.tight_layout()
+plt.show()
+```
+
+**Rare-category grouping.** Several categorical columns have a long tail of
+near-unique codes — verified against the real training data, `Father's
+occupation` has 56 distinct codes, 44 of them below 1% frequency. One-hot
+encoding all of them would fragment the feature space into columns the
+model barely ever sees, and risks an unseen rare code at inference time
+being treated identically to *every other* unseen code by
+`OneHotEncoder(handle_unknown="ignore")`'s all-zero encoding — rather than
+being recognised as "the same kind of rare code" the model saw examples of
+in training. `RareCategoryGrouper` collapses any category below a frequency
+threshold into a shared sentinel *before* one-hot encoding, learned from
+training data only (no test-time leakage).
+
+## Methodology
+
+**Preprocessing.** Numeric features (raw + engineered) are median-imputed
+then standardized; categorical (integer-coded, rare-grouped) features are
+most-frequent-imputed then one-hot encoded, with unseen categories at
+inference time mapped to an all-zero encoding rather than raising an error.
+
+**Model selection.** Rather than assuming one model family is best, the
+project sweeps eight: a linear baseline (regularized logistic regression),
+bagged trees (Random Forest), two classic boosting variants (AdaBoost,
+Gradient Boosting), and four modern gradient-boosting implementations
+(HistGradientBoosting, XGBoost, LightGBM, CatBoost) — see
+`src/academic_success/model.py`'s `MODEL_FACTORIES`.
+
+**Class imbalance.** The target is moderately imbalanced (~47% Graduate,
+33% Dropout, 20% Enrolled). ADASYN (Adaptive Synthetic Sampling) was
+evaluated as a mitigation, generating synthetic minority-class examples
+concentrated near the decision boundary. Implemented via an
+`imblearn.pipeline.Pipeline` so resampling only ever touches the training
+fold — never validation or test data, which would otherwise leak synthetic
+points into the score.
+
+**Ensembling.** A stacking ensemble (Random Forest + XGBoost + LightGBM +
+CatBoost feeding a logistic regression meta-learner via
+`sklearn.StackingClassifier`) was evaluated against the best single model,
+on a held-out split rather than nested cross-validation — `Stacking
+Classifier` already runs its own internal 5-fold CV to generate the
+meta-learner's training data, so an *outer* 5-fold CV on top would mean 25
+fits per base model instead of 5.
+
+**Interpretability.** SHAP (`shap.TreeExplainer`) attributes individual
+predictions to feature contributions for the final tree-based model,
+validating (or challenging) the feature-engineering rationale above against
+what the model actually learned.
+
+**Validation.** All model comparisons use 5-fold cross-validation, reporting
+both accuracy and macro-averaged F1 — macro-F1 matters here because the
+three target classes are not evenly distributed, and a model that mostly
+predicts the majority class would look deceptively good on raw accuracy
+alone.
+
+## Results
+
+::: {.callout-tip}
+## Where these numbers come from
+The tables and charts below transcribe the actual output of
+`notebooks/01_eda_and_modeling.ipynb` Sections 9–12 (run against the real
+downloaded competition data). They're hard-coded here rather than
+recomputed on every report render — re-running an 8-model x 5-fold sweep
+plus a stacking ensemble just to render a report would take several
+minutes for no new information.
+:::
+
+### Model sweep
+
+Stratified 15,000-row subsample, 5-fold CV, for fast iteration (see
+Section 9 of the notebook):
+
+```{python}
+#| label: fig-model-sweep
+#| fig-cap: "Cross-validated macro-F1 across all 8 model families (15,000-row subsample)."
+sweep_results = pd.DataFrame([
+    {"model": "Gradient Boosting", "accuracy": 0.8247, "f1_macro": 0.7846},
+    {"model": "HistGradientBoosting", "accuracy": 0.8230, "f1_macro": 0.7839},
+    {"model": "Logistic Regression", "accuracy": 0.8229, "f1_macro": 0.7806},
+    {"model": "LightGBM", "accuracy": 0.8197, "f1_macro": 0.7790},
+    {"model": "CatBoost", "accuracy": 0.8198, "f1_macro": 0.7783},
+    {"model": "Random Forest", "accuracy": 0.8191, "f1_macro": 0.7770},
+    {"model": "XGBoost", "accuracy": 0.8146, "f1_macro": 0.7727},
+    {"model": "AdaBoost", "accuracy": 0.8133, "f1_macro": 0.7692},
+]).sort_values("f1_macro")
+
+fig, ax = plt.subplots(figsize=(7, 4.5))
+bars = ax.barh(sweep_results["model"], sweep_results["f1_macro"], color=PALETTE[0])
+bars[-1].set_color(PALETTE[3])  # highlight the winner
+ax.set_xlim(0.76, 0.79)
+ax.set_xlabel("CV macro F1")
+ax.set_title("Model sweep — Gradient Boosting edges out the field")
+for bar, value in zip(bars, sweep_results["f1_macro"]):
+    ax.text(value + 0.0006, bar.get_y() + bar.get_height() / 2, f"{value:.4f}", va="center", fontsize=9)
+plt.tight_layout()
+plt.show()
+```
+
+### Full-data final model
+
+The project's saved default (HistGradientBoosting, `models/model.joblib`)
+trained with 5-fold CV on the *full* 76,518-row training set reaches
+**0.8317 accuracy / 0.7949 macro-F1** — beating *every* model in the
+15,000-row sweep above, including the one that nominally "won" it.
+
+::: {.callout-important}
+## Data volume beat model choice
+More training data mattered more than which model family was used, at
+least within the model families tried here. This is a common — and
+easy-to-miss — result: it's tempting to spend effort tuning/switching
+models when spending it on getting more (or better-utilized) data would
+pay off more.
+:::
+
+### Class imbalance: does ADASYN help?
+
+Evaluated on the sweep's best model (Gradient Boosting, same 15,000-row
+subsample):
+
+```{python}
+#| label: fig-adasyn-comparison
+#| fig-cap: "ADASYN oversampling slightly hurt macro-F1 on this dataset."
+resample_results = pd.DataFrame([
+    {"resample": "None", "f1_macro": 0.7846},
+    {"resample": "ADASYN", "f1_macro": 0.7829},
+])
+
+fig, ax = plt.subplots(figsize=(5, 3.5))
+bars = ax.bar(resample_results["resample"], resample_results["f1_macro"], color=[PALETTE[0], PALETTE[3]], width=0.5)
+ax.set_ylim(0.77, 0.79)
+ax.set_ylabel("CV macro F1")
+ax.set_title("Resampling comparison")
+for bar, value in zip(bars, resample_results["f1_macro"]):
+    ax.text(bar.get_x() + bar.get_width() / 2, value + 0.0008, f"{value:.4f}", ha="center", fontsize=10)
+plt.tight_layout()
+plt.show()
+```
+
+### Ensembling: does stacking help?
+
+Held-out 20% split, same subsample:
+
+```{python}
+#| label: fig-stacking-comparison
+#| fig-cap: "The stacking ensemble roughly ties the best single model, at far higher training cost."
+stacking_results = pd.DataFrame([
+    {"model": "Best single model\n(Gradient Boosting)", "f1_macro": 0.7772},
+    {"model": "Stacking ensemble", "f1_macro": 0.7742},
+])
+
+fig, ax = plt.subplots(figsize=(5, 3.5))
+bars = ax.bar(stacking_results["model"], stacking_results["f1_macro"], color=[PALETTE[4], PALETTE[3]], width=0.5)
+ax.set_ylim(0.76, 0.79)
+ax.set_ylabel("Holdout macro F1")
+ax.set_title("Stacking vs. single model")
+for bar, value in zip(bars, stacking_results["f1_macro"]):
+    ax.text(bar.get_x() + bar.get_width() / 2, value + 0.0008, f"{value:.4f}", ha="center", fontsize=10)
+plt.tight_layout()
+plt.show()
+```
+
+::: {.callout-important}
+## Two negative results, reported honestly
+Neither ADASYN nor stacking improved on the simpler alternative — ADASYN
+made macro-F1 slightly *worse*, and stacking essentially tied the single
+model while costing far more to train. That's exactly why the project's
+saved default model stays a single HistGradientBoostingClassifier rather
+than the fancier options; see the Discussion below for why.
+:::
+
+### Model interpretability (SHAP)
+
+HistGradientBoosting final model, 500-row sample, mean absolute SHAP value
+averaged across all 3 classes:
+
+```{python}
+#| label: fig-shap-top-features
+#| fig-cap: "Top 10 features by mean |SHAP value| — the engineered trajectory features dominate."
+shap_results = pd.DataFrame([
+    {"feature": "approval_rate_2nd_sem", "mean_abs_shap": 0.674},
+    {"feature": "total_units_approved", "mean_abs_shap": 0.253},
+    {"feature": "approval_rate_1st_sem", "mean_abs_shap": 0.180},
+    {"feature": "Tuition fees up to date", "mean_abs_shap": 0.146},
+    {"feature": "2nd-sem grade", "mean_abs_shap": 0.140},
+    {"feature": "2nd-sem evaluations", "mean_abs_shap": 0.125},
+    {"feature": "1st-sem grade", "mean_abs_shap": 0.099},
+    {"feature": "Scholarship holder", "mean_abs_shap": 0.092},
+    {"feature": "1st-sem evaluations", "mean_abs_shap": 0.084},
+    {"feature": "Age at enrollment", "mean_abs_shap": 0.074},
+]).sort_values("mean_abs_shap")
+
+is_engineered = shap_results["feature"].str.contains("approval_rate|total_units")
+colors = [PALETTE[3] if e else PALETTE[0] for e in is_engineered]
+
+fig, ax = plt.subplots(figsize=(7, 4.8))
+bars = ax.barh(shap_results["feature"], shap_results["mean_abs_shap"], color=colors)
+ax.set_xlabel("Mean |SHAP value|")
+ax.set_title("Engineered features (orange) dominate the top 3")
+plt.tight_layout()
+plt.show()
+```
+
+## Discussion
+
+Pulling the Results section's findings together: the engineered trajectory
+features aren't just theoretically motivated (as argued in Feature
+Engineering) — SHAP confirms they're what the model actually leans on most,
+with `approval_rate_2nd_sem` alone outweighing the next-ranked feature by
+more than 2.5x. That closes the loop between *why* a feature was built and
+*whether* the model agrees it matters.
+
+The two negative results (ADASYN, stacking) are worth sitting with rather
+than rationalizing away. Both are standard "try this, it should help"
+techniques — and neither did, here. That's precisely why this project keeps
+a single HistGradientBoostingClassifier as its saved default
+(`models/model.joblib`) rather than reaching for the more sophisticated
+options by default: added complexity earns its place only when it earns
+its keep, and `scripts/train.py --stacking` / `--resample` stay available
+for anyone who wants to re-check that conclusion on a different split or at
+full data scale.
+
+::: {.callout-warning}
+## Limitations
+- This dataset is a Kaggle Playground competition — a synthetic-augmented
+  version of the original UCI data. Real-world deployment on a different
+  institution's population would need re-validation.
+- The "Enrolled" class is inherently ambiguous — it means the student's
+  final outcome (Dropout vs. Graduate) simply hasn't happened yet, not that
+  the model has genuinely identified a third *type* of student.
+- The ADASYN and stacking comparisons ran on a 15,000-row subsample (for
+  tractable notebook runtime) and a single train/validation split
+  respectively — both conclusions are directional findings from this run,
+  not guaranteed to hold at full data scale or across different random
+  splits.
+- No fairness/bias audit across demographic subgroups (e.g., nationality,
+  gender) was performed here; a real deployment for an at-risk-student
+  early-warning system would need one before use.
+:::
+
+## Conclusion
+
+A moderate amount of feature engineering focused on *trajectory* rather than
+snapshot performance — validated after the fact by SHAP, not just assumed
+up front — combined with a standard gradient-boosted tree model, proper
+cross-validation, and an honest evaluation of fancier techniques (ADASYN,
+stacking) that turned out not to help here, is enough to build a
+competitive, well-understood baseline for this task — while staying at a
+scope appropriate for a teaching/portfolio project rather than a production
+system.
