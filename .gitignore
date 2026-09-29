@@ -17,6 +17,7 @@ _site/
 /report/report.html
 !/report/report.html
 /report/report.pdf
+!/report/report.pdf
 /report/report.tex
 /report/.quarto/
 /report/report_files/
