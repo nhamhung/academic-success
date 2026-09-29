@@ -15,6 +15,7 @@ _site/
 
 # Quarto render output
 /report/report.html
+!/report/report.html
 /report/report.pdf
 /report/report.tex
 /report/.quarto/
