@@ -14,7 +14,38 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from academic_success import config, data, features, model  # noqa: E402
+from academic_success import config, data, features, interpretability, model  # noqa: E402
+
+
+def _configure_kaggle_credentials() -> None:
+    """Wire Kaggle API credentials from Streamlit secrets into the
+    environment variables the `kaggle` package reads, so a deployment
+    without a pre-baked Docker image (e.g. Streamlit Community Cloud)
+    can fetch the competition data automatically on first load — see
+    `data._download_from_kaggle`. A no-op if real environment variables
+    are already set (e.g. running locally) or no `[kaggle]` secret is
+    configured (falls back to `~/.kaggle/kaggle.json` if present, or to
+    the manual-download error message if not).
+    """
+    if os.environ.get("KAGGLE_API_TOKEN") or (
+        os.environ.get("KAGGLE_USERNAME") and os.environ.get("KAGGLE_KEY")
+    ):
+        return
+    try:
+        token = st.secrets.get("KAGGLE_API_TOKEN")
+        if token:
+            os.environ["KAGGLE_API_TOKEN"] = token
+            return
+    except Exception:
+        pass
+    try:
+        os.environ["KAGGLE_USERNAME"] = st.secrets["kaggle"]["username"]
+        os.environ["KAGGLE_KEY"] = st.secrets["kaggle"]["key"]
+    except Exception:
+        pass
+
+
+_configure_kaggle_credentials()
 
 
 @st.cache_resource
@@ -24,28 +55,7 @@ def get_pipeline():
 
 @st.cache_data
 def get_train_df() -> pd.DataFrame:
-    if config.TRAIN_CSV.exists():
-        return data.load_train()
-
-    token = os.getenv("KAGGLE_API_TOKEN")
-    if not token:
-        try:
-            token = st.secrets.get("KAGGLE_API_TOKEN")
-        except FileNotFoundError:
-            token = None
-
-    try:
-        downloaded_path = data.download_train(api_token=token)
-    except (FileNotFoundError, RuntimeError) as exc:
-        st.error(
-            "The training data is unavailable. For a hosted deployment, add "
-            "`KAGGLE_API_TOKEN` to the app's Streamlit secrets after accepting "
-            "the competition rules on Kaggle."
-        )
-        st.exception(exc)
-        st.stop()
-
-    return data.load_train(downloaded_path)
+    return data.load_train()
 
 
 @st.cache_data
@@ -75,10 +85,6 @@ def get_engineered_df() -> pd.DataFrame:
 
 @st.cache_data(show_spinner="Computing SHAP values (first load only)...")
 def get_shap_explanation(sample_size: int = 300):
-    # SHAP is intentionally lazy-loaded. Importing it eagerly adds substantial
-    # cold-start time even when a visitor never opens Model Insights.
-    from academic_success import interpretability
-
     pipeline = get_pipeline()
     train_df = get_train_df()
     X = train_df[config.RAW_FEATURE_COLS]

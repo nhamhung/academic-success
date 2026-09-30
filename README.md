@@ -127,30 +127,6 @@ docker run -p 8501:8501 academic-success-app
 
 Then open http://localhost:8501.
 
-When raw data is absent, the app can download `train.csv` from Kaggle using a
-`KAGGLE_API_TOKEN` environment variable or Streamlit secret. The token owner
-must have accepted the competition rules. Never commit the token.
-
-## Deploy to Streamlit Community Cloud
-
-This repository is prepared for Community Cloud:
-
-- repository: `nhamhhung/academic-success`;
-- entrypoint: `app/streamlit_app.py`;
-- Python: 3.12;
-- dependencies: `app/requirements.txt`; and
-- required secret: `KAGGLE_API_TOKEN`.
-
-The raw Kaggle files remain excluded from Git. See the repository-level
-[`docs/SETUP_AND_DEPLOYMENT.md`](docs/SETUP_AND_DEPLOYMENT.md) for the
-complete deployment procedure.
-
-## Publish the report
-
-The repository-local Pages workflow renders the static `site/` project and
-publishes it independently. The research report remains reproducible with the
-command below and no raw data or credential is published.
-
 ## Render the research writeup
 
 Requires [Quarto](https://quarto.org/docs/get-started/) installed separately
@@ -166,13 +142,14 @@ quarto render report/report.qmd
 pytest tests/
 ```
 
-## Public deployment
-
-- GitHub Pages: <https://nhamhhung.github.io/academic-success/>
-- Streamlit: <https://academic-success.streamlit.app>
-- Clone/fork deployment guide: [`docs/SETUP_AND_DEPLOYMENT.md`](docs/SETUP_AND_DEPLOYMENT.md)
-
-This directory is published as its own repository and does not depend on the parent workspace.
-
 These test the feature engineering logic directly with synthetic data — no
 Kaggle download needed.
+
+## Deploy
+
+The Streamlit app fetches its source data through the Kaggle API at runtime. Configure either KAGGLE_API_TOKEN or a [kaggle] secrets section containing username and key.
+
+- Repository: <https://github.com/nhamhhung/academic-success>
+- Report: <https://nhamhung.github.io/academic-success/>
+- Streamlit: <https://academic-success.streamlit.app>
+- Fork setup: [docs/SETUP_AND_DEPLOYMENT.md](docs/SETUP_AND_DEPLOYMENT.md)

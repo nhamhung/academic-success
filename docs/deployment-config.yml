@@ -6,4 +6,5 @@ streamlit_url: https://academic-success.streamlit.app
 streamlit_entrypoint: app/streamlit_app.py
 streamlit_secrets:
   - KAGGLE_API_TOKEN
-
+  - kaggle.username
+  - kaggle.key

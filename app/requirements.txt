@@ -9,4 +9,4 @@ matplotlib>=3.8
 seaborn>=0.13
 imbalanced-learn>=0.12
 shap>=0.45
-kagglehub>=1.0,<2.0
+kaggle>=1.6,<2.0
