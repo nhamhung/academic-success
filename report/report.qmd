@@ -53,6 +53,11 @@ plt.rcParams.update({
 })
 ```
 
+::: {.callout-tip}
+## Interactive application
+[Open the Streamlit app](https://academic-success.streamlit.app){target="_blank"}
+:::
+
 ## Introduction
 
 I picked this problem because it sits right at the intersection of "a

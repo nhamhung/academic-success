@@ -12,6 +12,7 @@ request, the same as the manual CLI command already documented below,
 rather than redistributing the data anywhere.
 """
 
+import os
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -65,9 +66,15 @@ def _require_file(path: Path) -> Path:
     return path
 
 
+def using_sample_data() -> bool:
+    """Whether the bundled Kaggle-derived sample is the active data source."""
+    return config.TRAIN_SAMPLE_CSV.exists() and os.getenv("USE_FULL_KAGGLE_DATA", "").lower() not in {"1", "true", "yes"}
+
+
 def load_train() -> pd.DataFrame:
-    """Load the labeled training data, indexed by id."""
-    df = pd.read_csv(_require_file(config.TRAIN_CSV))
+    """Load fast sample data by default; opt into the full Kaggle download with USE_FULL_KAGGLE_DATA=true."""
+    path = config.TRAIN_SAMPLE_CSV if using_sample_data() else _require_file(config.TRAIN_CSV)
+    df = pd.read_csv(path)
     return df.set_index(config.ID_COL)
 
 
