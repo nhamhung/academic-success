@@ -7,7 +7,6 @@ matplotlib>=3.8
 seaborn>=0.13
 jupyter>=1.0
 pytest>=8.0
-kagglehub>=1.0,<2.0
 
 # Additional models
 xgboost>=2.0
@@ -19,3 +18,6 @@ imbalanced-learn>=0.12
 
 # Model interpretability (SHAP)
 shap>=0.45
+
+# Automatic dataset download on deployments without a pre-baked Docker image
+kaggle>=1.6

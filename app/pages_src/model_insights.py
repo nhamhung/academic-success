@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from . import shared
+from academic_success.interpretability import top_shap_features
 
 PALETTE = ["#2c5cc5", "#5b8def", "#8fb4f2", "#e07a5f", "#81b29a"]
 
@@ -38,9 +39,6 @@ STACKING_RESULTS = pd.DataFrame([
 
 
 def render():
-    # Keep SHAP off the default Predict page's cold-start path.
-    from academic_success.interpretability import top_shap_features
-
     st.title("🧠 Model Insights")
     st.caption(
         "What the model comparison found, and — via SHAP — what the final "

@@ -1,75 +1,62 @@
-"""Data loading and optional Kaggle download helpers.
+"""Data loading helpers.
 
 Raw CSVs are not committed to the repo (Kaggle competition data may not be
 redistributed). Download them first — see the project README for the
-`kaggle competitions download` command. Hosted applications can instead call
-``download_train`` with a Kaggle API token supplied by their secrets manager.
+`kaggle competitions download` command — or let `_require_file` fetch
+them automatically via the Kaggle API (used when deploying without a
+Docker image that already bakes the files in; see
+`app/pages_src/shared.py` for how deployed credentials get wired in).
+Auto-fetching at deploy time is consistent with the competition's own
+terms either way: it downloads to this account's own environment on
+request, the same as the manual CLI command already documented below,
+rather than redistributing the data anywhere.
 """
 
-import os
 from pathlib import Path
+from zipfile import ZipFile
 
 import pandas as pd
 
 from . import config
 
 
-def download_train(api_token: str | None = None) -> Path:
-    """Download ``train.csv`` from Kaggle when it is not already available.
-
-    The token is never persisted by this function. It is passed to KaggleHub
-    through ``KAGGLE_API_TOKEN``, which is suitable for Streamlit Community
-    Cloud and other secrets managers. The caller must have accepted the
-    competition rules on Kaggle first.
+def _download_from_kaggle() -> bool:
+    """Best-effort automatic fetch via the Kaggle API. Competition
+    downloads (unlike plain datasets) come back as a single zip with no
+    built-in unzip option, so this extracts it manually. Returns
+    whether the target file exists afterward. Silently does nothing
+    (returns False) if the `kaggle` package isn't installed, no
+    credentials are configured, or this account hasn't accepted the
+    competition's rules on kaggle.com yet — callers fall back to the
+    manual-download error message either way.
     """
-    if config.TRAIN_CSV.exists():
-        return config.TRAIN_CSV
-
-    token = api_token or os.getenv("KAGGLE_API_TOKEN")
-    if not token:
-        raise FileNotFoundError(
-            f"{config.TRAIN_CSV} is missing and no Kaggle API token is configured. "
-            "Download the competition data locally or set KAGGLE_API_TOKEN in "
-            "your deployment secrets."
-        )
-
-    config.DATA_RAW_DIR.mkdir(parents=True, exist_ok=True)
-    previous_token = os.environ.get("KAGGLE_API_TOKEN")
-    os.environ["KAGGLE_API_TOKEN"] = token
     try:
-        # Import only after exposing the token because authentication behavior
-        # may be initialized while KaggleHub itself is imported.
-        import kagglehub
+        from kaggle.api.kaggle_api_extended import KaggleApi
 
-        downloaded = Path(
-            kagglehub.competition_download(
-                config.KAGGLE_COMPETITION,
-                path=config.TRAIN_CSV.name,
-                output_dir=str(config.DATA_RAW_DIR),
-            )
-        )
-    finally:
-        if previous_token is None:
-            os.environ.pop("KAGGLE_API_TOKEN", None)
-        else:
-            os.environ["KAGGLE_API_TOKEN"] = previous_token
-
-    candidates = (config.TRAIN_CSV, downloaded, downloaded / config.TRAIN_CSV.name)
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-
-    raise FileNotFoundError(
-        "Kaggle reported a successful download, but train.csv was not found in "
-        f"{config.DATA_RAW_DIR}."
-    )
+        api = KaggleApi()
+        api.authenticate()
+        config.DATA_RAW_DIR.mkdir(parents=True, exist_ok=True)
+        api.competition_download_files(config.KAGGLE_COMPETITION, path=str(config.DATA_RAW_DIR), quiet=True)
+        zip_path = config.DATA_RAW_DIR / f"{config.KAGGLE_COMPETITION}.zip"
+        with ZipFile(zip_path) as zf:
+            zf.extractall(config.DATA_RAW_DIR)
+        zip_path.unlink(missing_ok=True)
+    except Exception:
+        return False
+    return config.TRAIN_CSV.exists()
 
 
 def _require_file(path: Path) -> Path:
     if not path.exists():
+        _download_from_kaggle()
+    if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found. Download the competition data first — see "
-            "the README's 'Get the data' section, e.g.:\n"
+            f"{path} not found, and automatic download via the Kaggle API "
+            "didn't produce it either (no credentials configured, the "
+            "`kaggle` package isn't installed, or this account hasn't "
+            "accepted the competition's rules on kaggle.com yet). Download "
+            "the competition data manually instead — see the README's 'Get "
+            "the data' section, e.g.:\n"
             f"  kaggle competitions download -c {config.KAGGLE_COMPETITION} "
             f"-p {config.DATA_RAW_DIR}\n"
             f"  unzip -o {config.DATA_RAW_DIR / (config.KAGGLE_COMPETITION + '.zip')} "
@@ -78,9 +65,9 @@ def _require_file(path: Path) -> Path:
     return path
 
 
-def load_train(path: Path | None = None) -> pd.DataFrame:
+def load_train() -> pd.DataFrame:
     """Load the labeled training data, indexed by id."""
-    df = pd.read_csv(_require_file(path or config.TRAIN_CSV))
+    df = pd.read_csv(_require_file(config.TRAIN_CSV))
     return df.set_index(config.ID_COL)
 
 
