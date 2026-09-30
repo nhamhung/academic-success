@@ -11,7 +11,18 @@ def _point_config_at(monkeypatch, raw_dir: Path) -> Path:
     train_csv = raw_dir / "train.csv"
     monkeypatch.setattr(config, "DATA_RAW_DIR", raw_dir)
     monkeypatch.setattr(config, "TRAIN_CSV", train_csv)
+    monkeypatch.setattr(config, "TRAIN_SAMPLE_CSV", raw_dir / "missing_sample.csv.gz")
     return train_csv
+
+
+def test_load_train_prefers_bundled_sample(monkeypatch, tmp_path):
+    sample_csv = tmp_path / "sample.csv"
+    sample_csv.write_text("id,Target\n7,Enrolled\n", encoding="utf-8")
+    monkeypatch.setattr(config, "TRAIN_SAMPLE_CSV", sample_csv)
+    monkeypatch.setattr(data, "_download_from_kaggle", lambda: pytest.fail("unexpected download"))
+
+    loaded = data.load_train()
+    assert loaded.loc[7, "Target"] == "Enrolled"
 
 
 def test_load_train_reuses_existing_file(monkeypatch, tmp_path):

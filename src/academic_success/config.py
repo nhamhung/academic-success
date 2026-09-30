@@ -12,10 +12,12 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_RAW_DIR = PROJECT_ROOT / "data" / "raw"
+DATA_SAMPLE_DIR = PROJECT_ROOT / "data" / "sample"
 DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 MODELS_DIR = PROJECT_ROOT / "models"
 
 TRAIN_CSV = DATA_RAW_DIR / "train.csv"
+TRAIN_SAMPLE_CSV = DATA_SAMPLE_DIR / "train_sample.csv.gz"
 TEST_CSV = DATA_RAW_DIR / "test.csv"
 SAMPLE_SUBMISSION_CSV = DATA_RAW_DIR / "sample_submission.csv"
 MODEL_PATH = MODELS_DIR / "model.joblib"
