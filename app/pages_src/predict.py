@@ -89,6 +89,9 @@ def _load_random_student():
     row = train_df.sample(1).iloc[0]
     for col in config.RAW_FEATURE_COLS:
         st.session_state[_field_key(col)] = _cast(col, row[col])
+    st.session_state["loaded_student_features"] = {
+        col: st.session_state[_field_key(col)] for col in config.RAW_FEATURE_COLS
+    }
     st.session_state["actual_outcome"] = row[config.TARGET_COL]
     st.session_state["loaded_a_student"] = True
 
@@ -98,6 +101,7 @@ def _reset_to_average():
     for col in config.RAW_FEATURE_COLS:
         st.session_state[_field_key(col)] = _cast(col, defaults[col])
     st.session_state.pop("actual_outcome", None)
+    st.session_state.pop("loaded_student_features", None)
     st.session_state["loaded_a_student"] = False
 
 
@@ -123,6 +127,13 @@ def _code_input(col: str, defaults: dict, max_value: int):
     st.number_input(f"{col} (code)", key=_field_key(col), min_value=0, max_value=max_value, step=1)
 
 
+def _matches_loaded_student(current: dict, reference: dict | None = None) -> bool:
+    """Only a completely unchanged historical row has valid ground truth."""
+    if reference is None:
+        reference = st.session_state.get("loaded_student_features")
+    return reference is not None and current == reference
+
+
 def render():
     st.title("🎯 Predict a Student's Outcome")
     st.caption(
@@ -146,7 +157,10 @@ def render():
         st.button("↺ Reset to dataset average", on_click=_reset_to_average, use_container_width=True)
 
     if st.session_state.get("loaded_a_student"):
-        st.info("Loaded a real student from the training set. Their actual outcome is revealed after you predict.")
+        st.info(
+            "Loaded a real student from the training set. The recorded outcome is "
+            "shown only while every field remains unchanged."
+        )
 
     st.subheader("The fields that matter most")
     st.caption("Promoted to the top based on this project's SHAP analysis — see Model Insights.")
@@ -235,11 +249,14 @@ def render():
         classes = pipeline.named_steps["model"].classes_
 
         actual = st.session_state.get("actual_outcome")
-        if actual is not None:
-            match = "✅ matches the model" if actual == prediction else "❌ differs from the model"
-            st.subheader(f"Prediction: **{prediction}**  |  Actual outcome: **{actual}** ({match})")
+        if actual is not None and _matches_loaded_student(row):
+            match = "✅ matches the recorded outcome" if actual == prediction else "❌ differs from the recorded outcome"
+            st.subheader(f"Prediction: **{prediction}**  |  Recorded outcome: **{actual}** ({match})")
+            st.caption("This comparison is for one unchanged historical row; it is not proof that the model is always correct.")
         else:
             st.subheader(f"Prediction: **{prediction}**")
+            if actual is not None:
+                st.info("The loaded student's fields were edited, so its original recorded outcome no longer applies and is not compared.")
 
         proba_df = pd.DataFrame({"Outcome": classes, "Probability": proba}).sort_values(
             "Probability", ascending=False

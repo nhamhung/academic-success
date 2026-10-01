@@ -1,11 +1,9 @@
 name: Pages
 
 on:
+  # pages-build is a required branch-protection check, so it must run on
+  # every pull request, including code-only UI fixes.
   pull_request:
-    paths:
-      - "report/**"
-      - "docs/**"
-      - ".github/workflows/pages.yml"
   push:
     branches: [main]
     paths:
