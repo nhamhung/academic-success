@@ -12,6 +12,17 @@ microcourses (**Pandas**, **Data Cleaning**, **Intro to Machine Learning**,
 project that exercises all of those skills together — from a raw dataset to
 a notebook, a research writeup, a usable app, and a real Kaggle submission.
 
+## Prerequisites
+
+Install once, before Setup below:
+
+| Dependency | Why | Install |
+|---|---|---|
+| **Python 3.12** | This project's `.venv` is built against 3.12 — a different version may resolve incompatible package versions from `requirements.txt`. | [python.org/downloads](https://www.python.org/downloads/) or a version manager (e.g. `pyenv install 3.12`) |
+| **Quarto** | Renders `report/report.qmd` — a standalone binary, not a Python package, so `pip install` never gets it. | [quarto.org/docs/get-started](https://quarto.org/docs/get-started/) |
+| **Kaggle API token** | Needed only for the complete dataset; the default Streamlit app uses a bundled sample, and `pytest` uses synthetic data. | Kaggle account → **Account → Create New API Token** → save the downloaded file as `~/.kaggle/kaggle.json` (`%USERPROFILE%\.kaggle\kaggle.json` on Windows). See the [Kaggle API docs](https://www.kaggle.com/docs/api). |
+| **Docker** (optional) | Only if you want to run the app in its pre-baked container instead of `streamlit run`. | [docker.com/get-started](https://www.docker.com/get-started/) |
+
 ## What's here
 
 | Deliverable | Where |
@@ -25,6 +36,31 @@ All four share one preprocessing/training pipeline in `src/academic_success/`,
 so the notebook, the app, and the submission script can never quietly drift
 apart from each other — they all load the same trained
 `models/model.joblib`.
+
+## Making changes
+
+`src/academic_success/` is the single source of truth — `config.py`
+(paths, schema, constants), `data.py` (loading/splitting), `features.py`
+(feature engineering), `model.py` (pipelines, training, evaluation),
+`interpretability.py` (SHAP). The notebook, the app, and
+`scripts/make_submission.py` all import from here; nothing re-derives
+logic locally, so a change here propagates everywhere automatically.
+
+The edit loop:
+
+```bash
+# 1. Edit src/academic_success/*.py
+
+# 2. Check it against the test suite (fast, synthetic data, no download needed)
+pytest tests/
+
+# 3. Retrain, so models/model.joblib reflects your change
+python scripts/train.py   # or --model <name>, --stacking, etc. — see --help
+```
+
+`models/model.joblib` is what the notebook, the app, and the report all
+load — retraining is the one step that makes a model-code change visible
+everywhere else.
 
 Also included: a sweep across 8 model families (Logistic Regression, Random
 Forest, AdaBoost, Gradient Boosting, HistGradientBoosting, XGBoost, LightGBM,
@@ -50,15 +86,16 @@ tests/                   # pytest tests for the feature engineering
 ## Setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+python3.12 -m venv .venv          # use the 3.12 interpreter specifically
+source .venv/bin/activate         # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
 ## Get the data
 
-This project doesn't commit Kaggle's competition data (redistribution isn't
-permitted). Download it yourself with the
+The complete Kaggle competition data is not committed (redistribution isn't
+permitted). A bundled 1,500-row sample keeps the Streamlit app responsive.
+Download the full training and test data with the
 [Kaggle API](https://www.kaggle.com/docs/api) (`pip install kaggle`, then put
 your `kaggle.json` API token in `~/.kaggle/`):
 
@@ -129,12 +166,50 @@ Then open http://localhost:8501.
 
 ## Render the research writeup
 
-Requires [Quarto](https://quarto.org/docs/get-started/) installed separately
-(it's not a Python package):
+`report/report.qmd` expects a Jupyter kernel named `academic-success` (its
+`jupyter:` front-matter key) — register it once from the activated venv
+before rendering:
 
 ```bash
+python -m ipykernel install --user --name academic-success
 quarto render report/report.qmd
 ```
+
+This regenerates both `report/report.html` and `report/report.pdf` (PDF
+needs a LaTeX distribution — if you don't have one, run
+`quarto install tinytex` once). Render just one format when you don't need
+both:
+
+```bash
+quarto render report/report.qmd --to html
+quarto render report/report.qmd --to pdf
+```
+
+Live-preview while editing (auto-rerenders on save):
+
+```bash
+quarto preview report/report.qmd
+```
+
+A `.qmd` file is Markdown prose plus fenced Python code chunks
+(` ```{python} `/` ``` `), executed top to bottom by the kernel above, same
+as a notebook cell. Common per-chunk options (a `#|` comment, first line of
+the chunk): `#| echo: false` (hide this chunk's source code),
+`#| output: false` (suppress its output, e.g. a setup/import cell),
+`#| label: fig-foo` + `#| fig-cap: "..."` (name and caption a figure for
+cross-referencing). The [Quarto VS Code
+extension](https://marketplace.visualstudio.com/items?itemName=quarto.quarto)
+adds syntax highlighting and a one-click Render button if you're doing more
+than a one-line edit.
+
+Troubleshooting:
+
+| Symptom | Likely cause |
+|---|---|
+| `Jupyter engine failed ... kernel not found` | The `ipykernel install --name academic-success` step above hasn't been run yet. |
+| `ModuleNotFoundError` inside a code chunk | `quarto render` runs with its working directory set to `report/`, not the project root — check the chunk's `sys.path.insert(0, "../src")` points at the right relative path. |
+| Output looks stale after editing | Force a clean re-run: `quarto render report/report.qmd --execute-daemon-restart`. |
+| PDF render fails, HTML succeeds | Missing LaTeX — run `quarto install tinytex` once, then retry. |
 
 ## Run the tests
 
